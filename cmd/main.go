@@ -4,40 +4,43 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 
+	"github.com/ta2min/aria-device-client/cios"
 	"go.bug.st/serial"
 )
 
 // https://wings.twelite.info/how-to-use/parent-mode/receive-message/app_aria
 // https://wings.twelite.info/how-to-use/parent-mode/receive-message/app_pal/app_pal-detail
 type Aria struct {
-	RelaySerialID  string
-	LQI            uint8
-	ContinueNumber uint16
-	SenderSerialID string
-	SenderLID      string
-	SensorType     string
-	PALID          string
-	SensorCount    uint8
-	PacketProperty PacketProperty
-	Event          MagnetismEventType
-	SupplyVoltage  uint16
-	DC1Voltage     uint16
-	Magnetism      MagnetismType
-	Temperature    float32
-	Humidity       float32
+	RelaySerialID  string             `json:"RelaySerialID"`
+	LQI            uint8              `json:"LQI"`
+	ContinueNumber uint16             `json:"ContinueNumber"`
+	SenderSerialID string             `json:"SenderSerialID"`
+	SenderLID      string             `json:"SenderLID"`
+	SensorType     string             `json:"SensorType"`
+	PALID          string             `json:"PALID"`
+	SensorCount    uint8              `json:"SensorCount"`
+	PacketProperty PacketProperty     `json:"PacketProperty"`
+	Event          MagnetismEventType `json:"Event"`
+	SupplyVoltage  uint16             `json:"SupplyVoltage"`
+	DC1Voltage     uint16             `json:"DC1Voltage"`
+	Magnetism      MagnetismType      `json:"Magnetism"`
+	Temperature    float32            `json:"Temperature"`
+	Humidity       float32            `json:"Humidity"`
 }
 
 type PacketProperty struct {
-	packetID             string
-	hasEvent             bool
-	WakeFactorDataSource WakeFactorDataSourceType
-	WakeFactor           WakeFactorType
+	PacketID             string                   `json:"PacketID"`
+	HasEvent             bool                     `json:"HasEvent"`
+	WakeFactorDataSource WakeFactorDataSourceType `json:"WakeFactorDataSource"`
+	WakeFactor           WakeFactorType           `json:"WakeFactor"`
 }
 
 // 起床要因データソース
@@ -198,8 +201,8 @@ func NewPacketProperty(bs [3]byte) PacketProperty {
 	packetID := bs[0] & 0x7F
 
 	return PacketProperty{
-		packetID:             strconv.Itoa(int(packetID)),
-		hasEvent:             hasEvent,
+		PacketID:             strconv.Itoa(int(packetID)),
+		HasEvent:             hasEvent,
 		WakeFactorDataSource: byteToWakeFactorDataSourceType(bs[1]),
 		WakeFactor:           byteToWakeFactorType(bs[2]),
 	}
@@ -208,12 +211,38 @@ func NewPacketProperty(bs [3]byte) PacketProperty {
 
 func main() {
 	portNmae := flag.String("p", "", "MONOSTICKが接続されているポート名")
+	channelID := flag.String("c", "", "Channel ID")
+	clientID := flag.String("i", "", "Device Client ID")
+	pemPath := flag.String("k", "./jwtRS256.key", "デバイスのpem形式の公開鍵のパス")
 	flag.Parse()
 
 	if *portNmae == "" {
 		fmt.Fprintf(os.Stderr, "MONOSTICKが接続されているポート名を入力してください\n")
 		os.Exit(1)
 	}
+
+	if *channelID == "" {
+		fmt.Fprintf(os.Stderr, "Channel IDを入力してください\n")
+		os.Exit(1)
+	}
+	rge := regexp.MustCompile(`[0-9a-v]{20}`)
+	if !rge.MatchString(*channelID) {
+		fmt.Fprintf(os.Stderr, "Channel IDのフォーマットが正しくないです\n")
+		os.Exit(1)
+	}
+
+	if *clientID == "" {
+		fmt.Fprintf(os.Stderr, "Devlice Client IDを入力してください\n")
+		os.Exit(1)
+	}
+
+	c, err := cios.NewProdCIOSDeviceClient(*clientID, []string{"messaging.publish"}, *pemPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "err1: %s", err.Error())
+		os.Exit(1)
+	}
+
+	c.PublishMessage(*channelID, []byte{byte('a')})
 
 	port, err := serial.Open(*portNmae, &serial.Mode{
 		BaudRate: 115200,
@@ -234,6 +263,11 @@ func main() {
 		if len(line) == 123 && line[0] == ':' {
 			aria := NewAria(d)
 			fmt.Fprintf(os.Stdout, "%+v\n", aria)
+			ariaJson, err := json.Marshal(aria)
+			if err != nil {
+				log.Panic(err)
+			}
+			c.PublishMessage(*channelID, ariaJson)
 		}
 	}
 }
